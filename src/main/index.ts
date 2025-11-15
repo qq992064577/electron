@@ -1,37 +1,110 @@
-import { app, BrowserWindow, Menu } from 'electron'
+import { app, BrowserWindow, Menu, shell, clipboard } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
-// Use the absolute path to the icon file
 
-// 右键菜单模板
+// ------------------------
+// 右键菜单增强
+// ------------------------
 function createContextMenu(win: BrowserWindow) {
   win.webContents.on('context-menu', (event, params) => {
     event.preventDefault()
-    const menuTemplate: Electron.MenuItemConstructorOptions[] = [
-      { label: '重新加载', accelerator: 'Ctrl+R', click: () => win.webContents.reload() },
-      { label: '返回', accelerator: 'Alt+Left', click: () => win.webContents.goBack() },
-      { label: '前进', accelerator: 'Alt+Right', click: () => win.webContents.goForward() },
+
+    const template: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: '重新加载',
+        accelerator: 'Ctrl+R',
+        click: () => win.webContents.reload()
+      },
+      {
+        label: '返回',
+        accelerator: 'Alt+Left',
+        enabled: win.webContents.canGoBack(),
+        click: () => win.webContents.goBack()
+      },
+      {
+        label: '前进',
+        accelerator: 'Alt+Right',
+        enabled: win.webContents.canGoForward(),
+        click: () => win.webContents.goForward()
+      },
       { type: 'separator' },
-      { label: '开发者工具', accelerator: 'F12', click: () => win.webContents.toggleDevTools() }
+      {
+        label: '开发者工具',
+        accelerator: 'F12',
+        click: () => win.webContents.toggleDevTools()
+      }
     ]
-    if (params.linkURL) {
-      menuTemplate.unshift({
-        label: '复制链接',
-        click: () => {
-          require('electron').clipboard.writeText(params.linkURL)
-        }
+
+    // 👉 【功能 1】选中内容可复制
+    if (params.selectionText && params.selectionText.trim() !== '') {
+      template.unshift({
+        label: '复制',
+        click: () => clipboard.writeText(params.selectionText)
       })
     }
-    const menu = Menu.buildFromTemplate(menuTemplate)
+
+    if (params.linkURL) {
+      template.unshift(
+        {
+          label: '在新窗口打开',
+          click: () => {
+            const child = new BrowserWindow({
+              width: 1000,
+              height: 700,
+              autoHideMenuBar: true,
+              webPreferences: {
+                sandbox: false,
+                contextIsolation: true
+              }
+            })
+            child.maximize()
+            child.loadURL(params.linkURL)
+            createContextMenu(child)
+          }
+        },
+        {
+          label: '在浏览器打开',
+          click: () => shell.openExternal(params.linkURL)
+        },
+        {
+          label: '复制链接',
+          click: () => clipboard.writeText(params.linkURL)
+        }
+      )
+    }
+
+    const menu = Menu.buildFromTemplate(template)
     menu.popup({ window: win })
   })
 }
 
+function bindKeyboardShortcut(win: BrowserWindow) {
+  win.webContents.on('before-input-event', (event, input) => {
+    // 后退
+    if (input.alt && input.code === 'ArrowLeft') {
+      if (win.webContents.canGoBack()) {
+        win.webContents.goBack()
+      }
+      event.preventDefault()
+    }
+
+    // 前进
+    if (input.alt && input.code === 'ArrowRight') {
+      if (win.webContents.canGoForward()) {
+        win.webContents.goForward()
+      }
+      event.preventDefault()
+    }
+  })
+}
+
+// ------------------------
+// 创建二级窗口（主窗口）
+// ------------------------
 function createSecondaryWindow(): void {
-  // Create the window that loads the external URL
-  const secondaryWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -42,51 +115,57 @@ function createSecondaryWindow(): void {
     }
   })
 
-  secondaryWindow.maximize() // 打开时自动最大化
+  win.maximize()
 
-  secondaryWindow.on('ready-to-show', () => {
-    secondaryWindow.show()
-  })
+  win.on('ready-to-show', () => win.show())
 
-  // Load the external URL
-  secondaryWindow.loadURL('https://oauth.swiftmm.cn/home')
+  win.loadURL('https://oauth.swiftmm.cn/home')
+  bindKeyboardShortcut(win)
+  createContextMenu(win)
 
-  createContextMenu(secondaryWindow)
-
-  secondaryWindow.webContents.setWindowOpenHandler((details) => {
-    // 每次网页尝试打开新窗口时，用我们自定义窗口打开
-    const childWin = new BrowserWindow({
+  // 拦截 window.open
+  win.webContents.setWindowOpenHandler((details) => {
+    const child = new BrowserWindow({
       width: 1000,
       height: 700,
-      show: true,
-      autoHideMenuBar: true, // <== 这里隐藏菜单
-      parent: secondaryWindow,
+      autoHideMenuBar: true,
+      show: false,
+      parent: win,
       webPreferences: {
         sandbox: false,
         contextIsolation: true
       }
     })
-    childWin.maximize()
-    childWin.loadURL(details.url) // 加载新打开的网页
-    createContextMenu(childWin) // 为新窗口创建右键菜单
-    return { action: 'deny' } // 拒绝默认行为
+
+    child.maximize()
+    child.loadURL(details.url)
+    bindKeyboardShortcut(child)
+
+    createContextMenu(child)
+
+    child.on('ready-to-show', () => child.show())
+
+    return { action: 'deny' }
   })
 }
 
+// ------------------------
+// App 生命周期
+// ------------------------
 app.whenReady().then(() => {
-  // Set app user model id for Windows
   electronApp.setAppUserModelId('com.electron')
 
-  // Optional: watch shortcuts for dev tools
+  // 自动开启 F12、Ctrl+R 等快捷键
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Create only the secondary window
   createSecondaryWindow()
 
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createSecondaryWindow()
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createSecondaryWindow()
+    }
   })
 })
 
